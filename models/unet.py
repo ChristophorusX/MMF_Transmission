@@ -8,8 +8,6 @@ from tensorflow.keras import losses
 from tensorflow.keras.initializers import TruncatedNormal
 from tensorflow.keras.optimizers import Adam
 
-import unet.metrics
-
 
 class ConvBlock(layers.Layer):
     """A convolutional block with the given number of filters and kernel size."""
@@ -47,7 +45,7 @@ class ConvBlock(layers.Layer):
         filters = _get_filter_count(layer_index, self.base_num_filters)
 
         self.conv2ds = []
-        for i in range(self.num_convs):
+        for _ in range(self.num_convs):
             conv = layers.Conv2D(
                 filters=filters,
                 kernel_size=(kernel_size, kernel_size),
@@ -59,12 +57,12 @@ class ConvBlock(layers.Layer):
             self.conv2ds.append(conv)
 
         self.dropouts = []
-        for i in range(self.num_convs):
+        for _ in range(self.num_convs):
             dropout = layers.Dropout(rate=dropout_rate)
             self.dropouts.append(dropout)
 
         self.activations = []
-        for i in range(self.num_convs):
+        for _ in range(self.num_convs):
             activation = layers.Activation(activation)
             self.activations.append(activation)
 
@@ -305,9 +303,7 @@ def configure_model(model: Model,
                                    ] = losses.categorical_crossentropy,
                     optimizer: Any = None,
                     metrics: Optional[List[Union[Callable, str]]] = None,
-                    dice_coefficient: bool = True,
                     auc: bool = True,
-                    mean_iou: bool = True,
                     learning_rate: float = 1e-4,
                     ):
     """Configures the model.
@@ -317,9 +313,7 @@ def configure_model(model: Model,
         loss (Optional[Union[Callable, str] ], optional): The loss function. Defaults to losses.categorical_crossentropy.
         optimizer (Any, optional): The optimizer. Defaults to None.
         metrics (Optional[List[Union[Callable, str]]], optional): The metrics for tracking. Defaults to None.
-        dice_coefficient (bool, optional): Whether to track dice coefficient metric. Defaults to True.
         auc (bool, optional): Whether to track AUC. Defaults to True.
-        mean_iou (bool, optional): Whether to track mean IOU. Defaults to True.
         learning_rate (float, optional): The learning rate. Defaults to 1e-4.
     """
 
@@ -331,12 +325,6 @@ def configure_model(model: Model,
             'categorical_crossentropy',
             'categorical_accuracy',
         ]
-
-    if mean_iou:
-        metrics += [unet.metrics.mean_iou]
-
-    if dice_coefficient:
-        metrics += [unet.metrics.dice_coefficient]
 
     if auc:
         metrics += [tf.keras.metrics.AUC()]
