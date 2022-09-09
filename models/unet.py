@@ -1,4 +1,4 @@
- from typing import Optional, Union, Callable, List
+from typing import Any, Optional, Union, Callable, List
 
 import numpy as np
 import tensorflow as tf
@@ -8,182 +8,288 @@ from tensorflow.keras import losses
 from tensorflow.keras.initializers import TruncatedNormal
 from tensorflow.keras.optimizers import Adam
 
-import unet.metrics
-
 
 class ConvBlock(layers.Layer):
+    """A convolutional block with the given number of filters and kernel size."""
 
-    def __init__(self, layer_idx, filters_root, kernel_size, dropout_rate, padding, activation, **kwargs):
-        super(ConvBlock, self).__init__(**kwargs)
-        self.layer_idx=layer_idx
-        self.filters_root=filters_root
-        self.kernel_size=kernel_size
-        self.dropout_rate=dropout_rate
-        self.padding=padding
-        self.activation=activation
+    def __init__(
+        self,
+        layer_index: int,
+        base_num_filters: int,
+        kernel_size: int,
+        dropout_rate: float,
+        padding: str,
+        activation: str,
+        num_convs: int = 2,
+    ):
+        """Initialize the convolutional block.
 
-        filters = _get_filter_count(layer_idx, filters_root)
-        self.conv2d_1 = layers.Conv2D(
-            filters=filters,
-                                      kernel_size=(kernel_size, kernel_size),
-                                      kernel_initializer=_get_kernel_initializer(filters, kernel_size),
-                                      strides=1,
-                                      padding=padding,
-                                      )
-        self.dropout_1 = layers.Dropout(rate=dropout_rate)
-        self.activation_1 = layers.Activation(activation)
+        Args:
+            layer_index (int): The index of the layer.
+            base_num_filters (int): The base number of filters.
+            kernel_size (int): The size of the convolutional kernel.
+            dropout_rate (float): The dropout rate.
+            padding (str): The padding type.
+            activation (str): The activation function.
+            num_convs (int, optional): The number of convolutional layers. Defaults to 2.
+        """
+        super(ConvBlock, self).__init__()
+        self.layer_index = layer_index
+        self.base_num_filters = base_num_filters
+        self.kernel_size = kernel_size
+        self.dropout_rate = dropout_rate
+        self.padding = padding
+        self.activation = activation
+        self.num_convs = num_convs
 
-        self.conv2d_2 = layers.Conv2D(
-            filters=filters,
-                                      kernel_size=(kernel_size, kernel_size),
-                                      kernel_initializer=_get_kernel_initializer(filters, kernel_size),
-                                      strides=1,
-                                      padding=padding,
-                                      )
-        self.dropout_2 = layers.Dropout(rate=dropout_rate)
-        self.activation_2 = layers.Activation(activation)
+        filters = _get_filter_count(layer_index, self.base_num_filters)
 
-    def call(self, inputs, training=None, **kwargs):
+        self.conv2ds = []
+        for i in range(self.num_convs):
+            conv = layers.Conv2D(
+                filters=filters,
+                kernel_size=(kernel_size, kernel_size),
+                kernel_initializer=_get_kernel_initializer(
+                    filters, kernel_size),
+                strides=1,
+                padding=padding,
+            )
+            self.conv2ds.append(conv)
+
+        self.dropouts = []
+        for i in range(self.num_convs):
+            dropout = layers.Dropout(rate=dropout_rate)
+            self.dropouts.append(dropout)
+
+        self.activations = []
+        for i in range(self.num_convs):
+            activation = layers.Activation(activation)
+            self.activations.append(activation)
+
+    def call(self, inputs: tf.Tensor, training: Optional[bool] = None) -> tf.Tensor:
+        """Forward pass of the convolutional block.
+
+        Args:
+            inputs (tf.Tensor): The input tensor.
+            training (bool, optional): The indication of training mode. Defaults to None.
+
+        Returns:
+            tf.Tensor: The output tensor.
+        """
         x = inputs
-        x = self.conv2d_1(x)
 
-        if training:
-            x = self.dropout_1(x)
-        x = self.activation_1(x)
-        x = self.conv2d_2(x)
+        for conv2d, dropout, activation in zip(self.conv2ds, self.dropouts, self.activations):
+            x = conv2d(x)
+            if training:
+                x = dropout(x)
+            x = activation(x)
 
-        if training:
-            x = self.dropout_2(x)
-
-        x = self.activation_2(x)
         return x
 
-    def get_config(self):
-        return dict(layer_idx=self.layer_idx,
-                    filters_root=self.filters_root,
-                    kernel_size=self.kernel_size,
-                    dropout_rate=self.dropout_rate,
-                    padding=self.padding,
-                    activation=self.activation,
-                    **super(ConvBlock, self).get_config(),
-                    )
+    def get_config(self) -> dict:
+        """Gets the configuration of the convolutional block.
+
+        Returns:
+            dict: The configuration of the convolutional block.
+        """
+        return dict(
+            layer_index=self.layer_index,
+            base_num_filters=self.base_num_filters,
+            kernel_size=self.kernel_size,
+            dropout_rate=self.dropout_rate,
+            padding=self.padding,
+            activation=self.activation,
+            **super(ConvBlock, self).get_config(),
+        )
 
 
 class UpconvBlock(layers.Layer):
+    """An upsampling block with the given number of filters and kernel size."""
 
-    def __init__(self, layer_idx, filters_root, kernel_size, pool_size, padding, activation, **kwargs):
-        super(UpconvBlock, self).__init__(**kwargs)
-        self.layer_idx=layer_idx
-        self.filters_root=filters_root
-        self.kernel_size=kernel_size
-        self.pool_size=pool_size
-        self.padding=padding
-        self.activation=activation
+    def __init__(
+        self,
+        layer_index: int,
+        base_num_filters: int,
+        kernel_size: int,
+        pool_size: int,
+        padding: str,
+        activation: str,
+    ):
+        """Initialize the upsampling block.
 
-        filters = _get_filter_count(layer_idx + 1, filters_root)
-        self.upconv = layers.Conv2DTranspose(filters // 2,
-                                             kernel_size=(pool_size, pool_size),
-                                             kernel_initializer=_get_kernel_initializer(filters, kernel_size),
-                                             strides=pool_size, padding=padding)
+        Args:
+            layer_index (int): The index of the layer.
+            base_num_filters (int): The base number of filters.
+            kernel_size (int): The size of the convolutional kernel.
+            pool_size (int): The size of the max pooling kernel.
+            padding (str): The padding type.
+            activation (str): The activation function.
+        """
+        super(UpconvBlock, self).__init__()
+        self.layer_index = layer_index
+        self.base_num_filters = base_num_filters
+        self.kernel_size = kernel_size
+        self.pool_size = pool_size
+        self.padding = padding
+        self.activation = activation
 
-        self.activation_1 = layers.Activation(activation)
+        filters = _get_filter_count(layer_index + 1, self.base_num_filters)
+        self.upconv = layers.Conv2DTranspose(
+            filters // 2,
+            kernel_size=(
+                pool_size,
+                pool_size,
+            ),
+            kernel_initializer=_get_kernel_initializer(
+                filters,
+                kernel_size,
+            ),
+            strides=pool_size,
+            padding=padding,
+        )
 
-    def call(self, inputs, **kwargs):
+        self.activation = layers.Activation(activation)
+
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
+        """Forward pass of the upsampling block.
+
+        Args:
+            inputs (tf.Tensor): The input tensor.
+
+        Returns:
+            tf.Tensor: The output tensor.
+        """
         x = inputs
         x = self.upconv(x)
-        x = self.activation_1(x)
+        x = self.activation(x)
+
         return x
 
-    def get_config(self):
-        return dict(layer_idx=self.layer_idx,
-                    filters_root=self.filters_root,
-                    kernel_size=self.kernel_size,
-                    pool_size=self.pool_size,
-                    padding=self.padding,
-                    activation=self.activation,
-                    **super(UpconvBlock, self).get_config(),
-                    )
+    def get_config(self) -> dict:
+        """Gets the configuration of the upsampling block.
 
-class CropConcatBlock(layers.Layer):
+        Returns:
+            dict: The configuration of the upsampling block.
+        """
+        return dict(
+            layer_index=self.layer_index,
+            base_num_filters=self.base_num_filters,
+            kernel_size=self.kernel_size,
+            pool_size=self.pool_size,
+            padding=self.padding,
+            activation=self.activation,
+            **super(UpconvBlock, self).get_config(),
+        )
 
-    def call(self, x, down_layer, **kwargs):
-        x1_shape = tf.shape(down_layer)
-        x2_shape = tf.shape(x)
 
-        height_diff = (x1_shape[1] - x2_shape[1]) // 2
-        width_diff = (x1_shape[2] - x2_shape[2]) // 2
+class ConcatBlock(layers.Layer):
+    """A concatenation block."""
 
-        down_layer_cropped = down_layer[:,
-                                        height_diff: (x2_shape[1] + height_diff),
-                                        width_diff: (x2_shape[2] + width_diff),
-                                        :]
+    def call(self, x: tf.Tensor, concatenated_layer: tf.Tensor) -> tf.Tensor:
+        """Forward pass of the concatenation block.
 
-        x = tf.concat([down_layer_cropped, x], axis=-1)
+        Args:
+            x (tf.Tensor): The input tensor.
+            concatenated_layer (tf.Tensor): The output tensor of the corresponding downsampling block.
+
+        Returns:
+            tf.Tensor: The output tensor.
+        """
+        downsampled_shape = tf.shape(concatenated_layer)
+        upsampled_shape = tf.shape(x)
+
+        height_diff = (downsampled_shape[1] - upsampled_shape[1]) // 2
+        width_diff = (downsampled_shape[2] - upsampled_shape[2]) // 2
+
+        concatenated_layer_cropped = concatenated_layer[:,
+                                                        height_diff: (upsampled_shape[1] + height_diff),
+                                                        width_diff: (upsampled_shape[2] + width_diff),
+                                                        :]
+
+        x = tf.concat([concatenated_layer_cropped, x], axis=-1)
         return x
 
 
-def build_model(nx: Optional[int] = None,
-                ny: Optional[int] = None,
-                channels: int = 1,
-                num_classes: int = 2,
-                layer_depth: int = 5,
-                filters_root: int = 64,
-                kernel_size: int = 3,
-                pool_size: int = 2,
-                dropout_rate: int = 0.5,
-                padding:str="valid",
-                activation:Union[str, Callable]="relu") -> Model:
+def construct_model(x_dims: Optional[int] = None,
+                    y_dims: Optional[int] = None,
+                    channels: int = 1,
+                    num_classes: int = 2,
+                    layer_depth: int = 5,
+                    base_num_filters: int = 64,
+                    kernel_size: int = 3,
+                    pool_size: int = 2,
+                    dropout_rate: int = 0.5,
+                    padding: str = "valid",
+                    activation: Union[str, Callable] = "relu") -> Model:
+    """Constructs the U-Net model.
+
+    Args:
+        x_dims (Optional[int], optional): The input dimension on x-axis. Defaults to None.
+        y_dims (Optional[int], optional): The input dimension on y-axis. Defaults to None.
+        channels (int, optional): The number of channels of the input image. Defaults to 1.
+        num_classes (int, optional): The number of classes. Defaults to 2.
+        layer_depth (int, optional): The depth of the U-Net model. Defaults to 5.
+        base_num_filters (int, optional): The number of convolutional filters at input layer. Defaults to 64.
+        kernel_size (int, optional): The size of convolutional kernel. Defaults to 3.
+        pool_size (int, optional): The size of maxpooling. Defaults to 2.
+        dropout_rate (int, optional): The dropout rate. Defaults to 0.5.
+        padding (str, optional): The padding type. Defaults to "valid".
+        activation (Union[str, Callable], optional): The activation function. Defaults to "relu".
+
+    Returns:
+        Model: A U-Net model.
     """
-    Constructs a U-Net model
-
-    :param nx: (Optional) image size on x-axis
-    :param ny: (Optional) image size on y-axis
-    :param channels: number of channels of the input tensors
-    :param num_classes: number of classes
-    :param layer_depth: total depth of unet
-    :param filters_root: number of filters in top unet layer
-    :param kernel_size: size of convolutional layers
-    :param pool_size: size of maxpooling layers
-    :param dropout_rate: rate of dropout
-    :param padding: padding to be used in convolutions
-    :param activation: activation to be used
-
-    :return: A TF Keras model
-    """
-
-    inputs = Input(shape=(nx, ny, channels), name="inputs")
+    inputs = Input(shape=(x_dims, y_dims, channels), name="inputs")
 
     x = inputs
     contracting_layers = {}
-
-    conv_params = dict(filters_root=filters_root,
-                       kernel_size=kernel_size,
-                       dropout_rate=dropout_rate,
-                       padding=padding,
-                       activation=activation)
-
-    for layer_idx in range(0, layer_depth - 1):
-        x = ConvBlock(layer_idx, **conv_params)(x)
-        contracting_layers[layer_idx] = x
+    # Contracting path
+    for layer_index in range(layer_depth - 1):
+        x = ConvBlock(
+            layer_index=layer_index,
+            base_num_filters=base_num_filters,
+            kernel_size=kernel_size,
+            dropout_rate=dropout_rate,
+            padding=padding,
+            activation=activation,
+        )(x)
+        contracting_layers[layer_index] = x
         x = layers.MaxPooling2D((pool_size, pool_size))(x)
+    # Bottleneck
+    x = ConvBlock(
+        layer_index + 1, base_num_filters=base_num_filters,
+        kernel_size=kernel_size,
+        dropout_rate=dropout_rate,
+        padding=padding,
+        activation=activation,)(x)
+    # Expansive path
+    for layer_index in range(layer_index, -1, -1):
+        x = UpconvBlock(
+            layer_index=layer_index,
+            base_num_filters=base_num_filters,
+            kernel_size=kernel_size,
+            pool_size=pool_size,
+            padding=padding,
+            activation=activation,
+        )(x)
+        x = ConcatBlock()(x, contracting_layers[layer_index])
+        x = ConvBlock(
+            layer_index=layer_index,
+            base_num_filters=base_num_filters,
+            kernel_size=kernel_size,
+            dropout_rate=dropout_rate,
+            padding=padding,
+            activation=activation,
+        )(x)
 
-    x = ConvBlock(layer_idx + 1, **conv_params)(x)
-
-    for layer_idx in range(layer_idx, -1, -1):
-        x = UpconvBlock(layer_idx,
-                        filters_root,
-                        kernel_size,
-                        pool_size,
-                        padding,
-                        activation)(x)
-        x = CropConcatBlock()(x, contracting_layers[layer_idx])
-        x = ConvBlock(layer_idx, **conv_params)(x)
-
-    x = layers.Conv2D(filters=num_classes,
-                      kernel_size=(1, 1),
-                      kernel_initializer=_get_kernel_initializer(filters_root, kernel_size),
-                      strides=1,
-                      padding=padding)(x)
+    x = layers.Conv2D(
+        filters=num_classes,
+        kernel_size=(1, 1),
+        kernel_initializer=_get_kernel_initializer(
+            base_num_filters, kernel_size),
+        strides=1,
+        padding=padding,
+    )(x)
 
     x = layers.Activation(activation)(x)
     outputs = layers.Activation("softmax", name="outputs")(x)
@@ -192,49 +298,35 @@ def build_model(nx: Optional[int] = None,
     return model
 
 
-def _get_filter_count(layer_idx, filters_root):
-    return 2 ** layer_idx * filters_root
+def configure_model(model: Model,
+                    loss: Optional[Union[Callable, str]
+                                   ] = losses.categorical_crossentropy,
+                    optimizer: Any = None,
+                    metrics: Optional[List[Union[Callable, str]]] = None,
+                    dice_coefficient: bool = True,
+                    auc: bool = True,
+                    mean_iou: bool = True,
+                    learning_rate: float = 1e-4,
+                    ):
+    """Configures the model.
 
-
-def _get_kernel_initializer(filters, kernel_size):
-    stddev = np.sqrt(2 / (kernel_size ** 2 * filters))
-    return TruncatedNormal(stddev=stddev)
-
-
-def finalize_model(model: Model,
-                   loss: Optional[Union[Callable, str]]=losses.categorical_crossentropy,
-                   optimizer: Optional= None,
-                   metrics:Optional[List[Union[Callable,str]]]=None,
-                   dice_coefficient: bool=True,
-                   auc: bool=True,
-                   mean_iou: bool=True,
-                   **opt_kwargs):
-    """
-    Configures the model for training by setting, loss, optimizer, and tracked metrics
-
-    :param model: the model to compile
-    :param loss: the loss to be optimized. Defaults to `categorical_crossentropy`
-    :param optimizer: the optimizer to use. Defaults to `Adam`
-    :param metrics: List of metrics to track. Is extended by `crossentropy` and `accuracy`
-    :param dice_coefficient: Flag if the dice coefficient metric should be tracked
-    :param auc: Flag if the area under the curve metric should be tracked
-    :param mean_iou: Flag if the mean over intersection over union metric should be tracked
-    :param opt_kwargs: key word arguments passed to default optimizer (Adam), e.g. learning rate
+    Args:
+        model (Model): The model to be configured.
+        loss (Optional[Union[Callable, str] ], optional): The loss function. Defaults to losses.categorical_crossentropy.
+        optimizer (Any, optional): The optimizer. Defaults to None.
+        metrics (Optional[List[Union[Callable, str]]], optional): The metrics for tracking. Defaults to None.
+        auc (bool, optional): Whether to track AUC. Defaults to True.
+        learning_rate (float, optional): The learning rate. Defaults to 1e-4.
     """
 
     if optimizer is None:
-        optimizer = Adam(**opt_kwargs)
+        optimizer = Adam(learning_rate=learning_rate)
 
     if metrics is None:
-        metrics = ['categorical_crossentropy',
-                   'categorical_accuracy',
-                   ]
-
-    if mean_iou:
-        metrics += [unet.metrics.mean_iou]
-
-    if dice_coefficient:
-        metrics += [unet.metrics.dice_coefficient]
+        metrics = [
+            'categorical_crossentropy',
+            'categorical_accuracy',
+        ]
 
     if auc:
         metrics += [tf.keras.metrics.AUC()]
@@ -243,3 +335,30 @@ def finalize_model(model: Model,
                   optimizer=optimizer,
                   metrics=metrics,
                   )
+
+
+def _get_filter_count(layer_index: int, base_num_filters: int) -> int:
+    """Gets the number of filters for a given layer.
+
+    Args:
+        layer_index (int): The layer index.
+        base_num_filters (int): The number of filters at the first layer.
+
+    Returns:
+        int: The number of filters.
+    """
+    return 2 ** layer_index * base_num_filters
+
+
+def _get_kernel_initializer(filters: int, kernel_size: int) -> Any:
+    """Gets the kernel initializer.
+
+    Args:
+        filters (int): The number of filters.
+        kernel_size (int): The size of the kernel.
+
+    Returns:
+        Any: A kernel initializer.
+    """
+    std = np.sqrt(2 / (kernel_size ** 2 * filters))
+    return TruncatedNormal(stddev=std)
