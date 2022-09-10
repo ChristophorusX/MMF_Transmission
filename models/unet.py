@@ -358,12 +358,12 @@ def _get_kernel_initializer(filters: int, kernel_size: int) -> Any:
     std = np.sqrt(2 / (kernel_size ** 2 * filters))
     return TruncatedNormal(stddev=std)
 
-def _normalize_img(image: Any, label: Any) -> tuple[tf.Tensor, tf.Tensor]:
+def _normalize_img(image: tf.Tensor, label: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
     """Normalizes the image.
 
     Args:
-        image (Any): Input image.
-        label (Any): Input label.
+        image (tf.Tensor): Input image.
+        label (tf.Tensor): Input label.
 
     Returns:
         tuple[tf.Tensor, tf.Tensor]: Normalized images.
