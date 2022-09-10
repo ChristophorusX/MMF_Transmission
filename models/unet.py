@@ -45,7 +45,7 @@ class ConvBlock(layers.Layer):
         filters = _get_filter_count(layer_index, self.base_num_filters)
 
         self.conv2ds = []
-        for i in range(self.num_convs):
+        for _ in range(self.num_convs):
             conv = layers.Conv2D(
                 filters=filters,
                 kernel_size=(kernel_size, kernel_size),
@@ -57,12 +57,12 @@ class ConvBlock(layers.Layer):
             self.conv2ds.append(conv)
 
         self.dropouts = []
-        for i in range(self.num_convs):
+        for _ in range(self.num_convs):
             dropout = layers.Dropout(rate=dropout_rate)
             self.dropouts.append(dropout)
 
         self.activations = []
-        for i in range(self.num_convs):
+        for _ in range(self.num_convs):
             activation = layers.Activation(activation)
             self.activations.append(activation)
 
@@ -213,13 +213,12 @@ class ConcatBlock(layers.Layer):
 def construct_model(x_dims: Optional[int] = None,
                     y_dims: Optional[int] = None,
                     channels: int = 1,
-                    num_classes: int = 2,
                     layer_depth: int = 5,
                     base_num_filters: int = 64,
                     kernel_size: int = 3,
                     pool_size: int = 2,
                     dropout_rate: int = 0.5,
-                    padding: str = "valid",
+                    padding: str = "same",
                     activation: Union[str, Callable] = "relu") -> Model:
     """Constructs the U-Net model.
 
@@ -227,13 +226,12 @@ def construct_model(x_dims: Optional[int] = None,
         x_dims (Optional[int], optional): The input dimension on x-axis. Defaults to None.
         y_dims (Optional[int], optional): The input dimension on y-axis. Defaults to None.
         channels (int, optional): The number of channels of the input image. Defaults to 1.
-        num_classes (int, optional): The number of classes. Defaults to 2.
         layer_depth (int, optional): The depth of the U-Net model. Defaults to 5.
         base_num_filters (int, optional): The number of convolutional filters at input layer. Defaults to 64.
         kernel_size (int, optional): The size of convolutional kernel. Defaults to 3.
         pool_size (int, optional): The size of maxpooling. Defaults to 2.
         dropout_rate (int, optional): The dropout rate. Defaults to 0.5.
-        padding (str, optional): The padding type. Defaults to "valid".
+        padding (str, optional): The padding type. Defaults to "same".
         activation (Union[str, Callable], optional): The activation function. Defaults to "relu".
 
     Returns:
@@ -255,6 +253,7 @@ def construct_model(x_dims: Optional[int] = None,
         )(x)
         contracting_layers[layer_index] = x
         x = layers.MaxPooling2D((pool_size, pool_size))(x)
+        print(f"Contracting layer {layer_index} shape: {x.shape}")
     # Bottleneck
     x = ConvBlock(
         layer_index + 1, base_num_filters=base_num_filters,
@@ -262,6 +261,7 @@ def construct_model(x_dims: Optional[int] = None,
         dropout_rate=dropout_rate,
         padding=padding,
         activation=activation,)(x)
+    print(f"Bottleneck layer shape: {x.shape}")
     # Expansive path
     for layer_index in range(layer_index, -1, -1):
         x = UpconvBlock(
@@ -281,21 +281,16 @@ def construct_model(x_dims: Optional[int] = None,
             padding=padding,
             activation=activation,
         )(x)
-
-    x = layers.Conv2D(
-        filters=num_classes,
+        print(f"Expansive layer {layer_index} shape: {x.shape}")
+    # Output layer
+    outputs = layers.Conv2D(
+        filters=channels,
         kernel_size=(1, 1),
-        kernel_initializer=_get_kernel_initializer(
-            base_num_filters, kernel_size),
-        strides=1,
+        activation=activation,
         padding=padding,
     )(x)
 
-    x = layers.Activation(activation)(x)
-    outputs = layers.Activation("softmax", name="outputs")(x)
-    model = Model(inputs, outputs, name="unet")
-
-    return model
+    return Model(inputs=inputs, outputs=outputs, name="unet")
 
 
 def configure_model(model: Model,
@@ -303,9 +298,7 @@ def configure_model(model: Model,
                                    ] = losses.categorical_crossentropy,
                     optimizer: Any = None,
                     metrics: Optional[List[Union[Callable, str]]] = None,
-                    dice_coefficient: bool = True,
                     auc: bool = True,
-                    mean_iou: bool = True,
                     learning_rate: float = 1e-4,
                     ):
     """Configures the model.
@@ -334,6 +327,7 @@ def configure_model(model: Model,
     model.compile(loss=loss,
                   optimizer=optimizer,
                   metrics=metrics,
+                  run_eagerly=True,
                   )
 
 
@@ -362,3 +356,14 @@ def _get_kernel_initializer(filters: int, kernel_size: int) -> Any:
     """
     std = np.sqrt(2 / (kernel_size ** 2 * filters))
     return TruncatedNormal(stddev=std)
+
+
+if __name__ == "__main__":
+    model = construct_model()
+    model.summary()
+
+    configure_model(model)
+
+    dummy_input = tf.convert_to_tensor(np.random.rand(32, 256, 256, 1))
+    output = model.predict(dummy_input)
+    print(f"Output shape: {output.shape}")
