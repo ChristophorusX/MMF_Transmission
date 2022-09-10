@@ -317,18 +317,18 @@ def configure_model(model: Model,
 
     if metrics is None:
         metrics = [
-            'categorical_crossentropy',
-            'categorical_accuracy',
+            'mse',
         ]
 
     if auc:
         metrics += [tf.keras.metrics.AUC()]
 
-    model.compile(loss=loss,
-                  optimizer=optimizer,
-                  metrics=metrics,
-                  run_eagerly=True,
-                  )
+    model.compile(
+        loss=loss,
+        optimizer=optimizer,
+        metrics=metrics,
+        run_eagerly=True,
+    )
 
 
 def _get_filter_count(layer_index: int, base_num_filters: int) -> int:
