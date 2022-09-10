@@ -2,6 +2,7 @@ from typing import Any, Optional, Union, Callable, List
 
 import numpy as np
 import tensorflow as tf
+import tensorflow_datasets as tfds
 from tensorflow.keras import Model, Input
 from tensorflow.keras import layers
 from tensorflow.keras import losses
@@ -295,10 +296,10 @@ def construct_model(x_dims: Optional[int] = None,
 
 def configure_model(model: Model,
                     loss: Optional[Union[Callable, str]
-                                   ] = losses.categorical_crossentropy,
+                                   ] = losses.MeanSquaredError(),
                     optimizer: Any = None,
                     metrics: Optional[List[Union[Callable, str]]] = None,
-                    auc: bool = True,
+                    auc: bool = False,
                     learning_rate: float = 1e-4,
                     ):
     """Configures the model.
@@ -357,13 +358,59 @@ def _get_kernel_initializer(filters: int, kernel_size: int) -> Any:
     std = np.sqrt(2 / (kernel_size ** 2 * filters))
     return TruncatedNormal(stddev=std)
 
+def _normalize_img(image: Any, label: Any) -> tuple[tf.Tensor, tf.Tensor]:
+    """Normalizes the image.
+
+    Args:
+        image (Any): Input image.
+        label (Any): Input label.
+
+    Returns:
+        tuple[tf.Tensor, tf.Tensor]: Normalized images.
+    """    
+    normalized_image = tf.cast(image, tf.float32) / 255.
+    return normalized_image, normalized_image
+
 
 if __name__ == "__main__":
-    model = construct_model()
+
+    (ds_train, ds_test), ds_info = tfds.load(
+        'mnist',
+        split=['train', 'test'],
+        shuffle_files=True,
+        as_supervised=True,
+        with_info=True,
+    )
+
+    ds_train = ds_train.map(
+        _normalize_img,
+        num_parallel_calls=tf.data.AUTOTUNE,
+    )
+    ds_train = ds_train.cache()
+    ds_train = ds_train.shuffle(ds_info.splits['train'].num_examples)
+    ds_train = ds_train.batch(128)
+    ds_train = ds_train.prefetch(tf.data.AUTOTUNE)
+
+    ds_test = ds_test.map(
+        _normalize_img,
+        num_parallel_calls=tf.data.AUTOTUNE,
+    )
+    ds_test = ds_test.batch(128)
+    ds_test = ds_test.cache()
+    ds_test = ds_test.prefetch(tf.data.AUTOTUNE)
+
+    model = construct_model(
+        x_dims=28,
+        y_dims=28,
+        layer_depth=2,
+    )
     model.summary()
 
-    configure_model(model)
+    configure_model(model=model, learning_rate=1e-3)
+    history = model.fit(
+        ds_train,
+        epochs=10,
+        validation_data=ds_test,
+    )
 
-    dummy_input = tf.convert_to_tensor(np.random.rand(32, 256, 256, 1))
-    output = model.predict(dummy_input)
-    print(f"Output shape: {output.shape}")
+    
