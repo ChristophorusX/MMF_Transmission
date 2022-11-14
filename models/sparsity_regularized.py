@@ -173,6 +173,7 @@ def construct_model(
     sample_dimension: int,
     fiber_features: int,
     activation: Union[str, Callable] = "cart_relu",
+    regularization: float = 0.0,
 ) -> Model:
     """Constructs the Sparsity-Regularized model.
 
@@ -181,6 +182,7 @@ def construct_model(
         fiber_features (int): The number of fiber configuration features.
         activation (Union[str, Callable], optional): The activation function. 
             Defaults to "cart_relu".
+        regularization (float, optional): The regularization factor. Defaults to 0.0.
 
     Returns:
         Model: A sparsity-regularized model.
@@ -199,19 +201,43 @@ def construct_model(
     transmission_matrix = TransmissionMatrixGenerator(
         sample_dimension, sample_dimension)(fiber_features)
     g = tf.einsum('bi,bij->bj', h, transmission_matrix)
-    outputs = ComplexDense(sample_dimension, activation=None)(g)
+    inversed = ComplexDense(sample_dimension, activation=None)
+    outputs = inversed(g)
+    inversed_h = inversed(h)
 
     return Model(
         inputs=[sample_inputs, fiber_features],
-        outputs=[outputs, h],
+        outputs=tf.stack([outputs, inversed_h], axis=-1),
         name="sparsity_regularized model",
     )
 
 
+class ModelLoss(Loss):
+    def call(
+        self,
+        y_true: tf.Tensor,
+        y_pred: tf.Tensor,
+    ) -> tf.Tensor:
+        """The loss function of the sparsity-regularized model.
+
+        Args:
+            y_true (tf.Tensor): The true value.
+            y_pred (tf.Tensor): The predicted value.
+
+        Returns:
+            tf.Tensor: The loss value.
+        """
+        labels = y_true[..., 0]
+        outputs = y_pred[..., 0]
+        inputs = y_true[..., 1]
+        inversed_h = y_pred[..., 1]
+
+        return ComplexMeanSquareError()(labels, outputs) + 0.1 * ComplexMeanSquareError()(inputs, inversed_h)
+
+
 def configure_model(
     model: Model,
-    loss: Optional[Union[Callable, str]
-                   ] = ComplexMeanSquareError(),
+    regularization: float,
     optimizer: Any = None,
     metrics: Optional[List[Union[Callable, str]]] = None,
     learning_rate: float = 1e-4,
@@ -220,8 +246,7 @@ def configure_model(
 
     Args:
         model (Model): The model to be configured.
-        loss (Optional[Union[Callable, str] ], optional): The loss function. 
-            Defaults to losses.categorical_crossentropy.
+        regularization (float): The regularization coefficient.
         optimizer (Any, optional): The optimizer. Defaults to None.
         metrics (Optional[List[Union[Callable, str]]], optional): The metrics for tracking. 
             Defaults to None.
@@ -237,7 +262,7 @@ def configure_model(
         ]
 
     model.compile(
-        loss=loss,
+        loss=ModelLoss(),
         optimizer=optimizer,
         metrics=metrics,
         run_eagerly=True,
@@ -245,16 +270,18 @@ def configure_model(
 
 
 if __name__ == '__main__':
-    sample_inputs = tf.random.normal((320, 10))
-    fiber_features = tf.random.normal((320, 5))
-    labels = tf.random.normal((320, 10))
+    sample_inputs = tf.cast(tf.random.normal((320, 10)), dtype=tf.complex64)
+    fiber_features = tf.cast(tf.random.normal((320, 5)), dtype=tf.complex64)
+    labels = tf.cast(tf.random.normal((320, 10)), dtype=tf.complex64)
     model = construct_model(sample_dimension=10, fiber_features=5)
-    configure_model(model)
-    out = model([sample_inputs, fiber_features])
-    len(out)
+    configure_model(model, regularization=0.1)
+    print(model.summary())
+    # out = model([sample_inputs, fiber_features])
+    # print(out.shape)
+    
     history = model.fit(
         [sample_inputs, fiber_features],
-        labels,
+        tf.stack([labels, sample_inputs], axis=-1),
         batch_size=32,
         epochs=100,
     )
