@@ -376,6 +376,7 @@ if __name__ == "__main__":
 
     (ds_train, ds_test), ds_info = tfds.load(
         'mnist',
+        data_dir='/home/rx43/project/MMF_Transmission/data',
         split=['train', 'test'],
         shuffle_files=True,
         as_supervised=True,
